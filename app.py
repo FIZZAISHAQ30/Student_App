@@ -592,7 +592,7 @@ with st.sidebar:
 
     st.title("🎓 Attendance App")
     st.caption("Administrator Dashboard")
-    st.title("🎓 Attendance App")
+    st.title( "Admin")
     #sst.success("Logged in as Admin")
 
     if st.button(
