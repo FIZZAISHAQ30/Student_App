@@ -568,6 +568,16 @@ h1, h2, h3 {
 # HEADER
 # =========================================================
 
+
+# =========================================================
+# HEADER
+# =========================================================
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
 st.markdown(
     '<div class="main-title">🎓 Student Attendance Management</div>',
     unsafe_allow_html=True
@@ -577,6 +587,8 @@ st.markdown(
     '<div class="subtitle">Manage classes, students, subjects and attendance.</div>',
     unsafe_allow_html=True
 )
+
+st.success("✓ Logged in as Admin")
 
 
 # =========================================================
