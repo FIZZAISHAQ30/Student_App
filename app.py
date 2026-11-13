@@ -280,9 +280,6 @@ def setup_database():
             "ALTER TABLE students ADD COLUMN active INTEGER DEFAULT 1"
         )
 
-    # Fix older databases that enforced roll_no uniqueness across all classes.
-    migrate_roll_number_uniqueness(conn)
-
     cur.execute(
         "INSERT OR IGNORE INTO classes(name) VALUES (?)",
         ("Class 1",)
@@ -297,6 +294,12 @@ def setup_database():
         "UPDATE students SET class_id = ? WHERE class_id IS NULL",
         (default_class["id"],)
     )
+
+    # Run this after legacy students have been assigned to the default class.
+    # This avoids a NULL class_id becoming a duplicate after the unique index
+    # is created. Existing duplicate records are preserved; the app still
+    # validates new registrations and edits within each class.
+    migrate_roll_number_uniqueness(conn)
 
     conn.commit()
     conn.close()
@@ -562,16 +565,6 @@ h1, h2, h3 {
 
 </style>
 """, unsafe_allow_html=True)
-
-
-# =========================================================
-# HEADER
-# =========================================================
-
-
-# =========================================================
-# HEADER
-# =========================================================
 
 
 # =========================================================
@@ -1431,46 +1424,35 @@ elif page == "Dashboard":
 
     st.subheader("📚 Today's Class Summary")
 
+    # Start from the classes table so every active class appears, even if
+    # its attendance has not been saved or linked correctly for today.
     summary = read_data("""
         SELECT
-            c.name AS class_name,
-            sub.name AS subject_name,
-
-            SUM(
-                CASE WHEN a.status = 'Present'
-                THEN 1 ELSE 0 END
-            ) AS present,
-
-            SUM(
-                CASE WHEN a.status = 'Absent'
-                THEN 1 ELSE 0 END
-            ) AS absent,
-
-            SUM(
-                CASE WHEN a.status = 'Leave'
-                THEN 1 ELSE 0 END
-            ) AS leave_count
-
-        FROM attendance a
-
-        JOIN students s ON a.student_id = s.id
-
-        JOIN classes c ON s.class_id = c.id
-
-        JOIN subjects sub ON a.subject_id = sub.id
-
-        WHERE a.attendance_date = ?
-
-        GROUP BY c.id, sub.id
-
+            c.name AS Class,
+            COALESCE(sub.name, 'No subject recorded') AS Subject,
+            COUNT(a.id) AS Total_Records,
+            COUNT(DISTINCT a.student_id) AS Students_Marked,
+            SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) AS Present,
+            SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) AS Absent,
+            SUM(CASE WHEN a.status = 'Leave' THEN 1 ELSE 0 END) AS Leave
+        FROM classes c
+        LEFT JOIN students s
+            ON s.class_id = c.id AND s.active = 1
+        LEFT JOIN attendance a
+            ON a.student_id = s.id AND a.attendance_date = ?
+        LEFT JOIN subjects sub
+            ON sub.id = a.subject_id
+        WHERE c.active = 1
+        GROUP BY c.id, c.name, sub.id, sub.name
         ORDER BY c.name, sub.name
     """, (today,))
 
     if summary.empty:
-
-        st.info("No attendance has been marked today.")
-
+        st.info("No active classes are available.")
     else:
+        # Replace SQL NULLs from classes with no attendance by readable zeros.
+        for column in ["Total_Records", "Students_Marked", "Present", "Absent", "Leave"]:
+            summary[column] = summary[column].fillna(0).astype(int)
 
         st.dataframe(
             summary,
