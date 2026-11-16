@@ -1535,6 +1535,154 @@ elif page == "Reports":
 
     else:
 
+        # ---------------------------------------------------------
+        # INDIVIDUAL STUDENT + MONTH-END CUMULATIVE REPORT
+        # A class session is counted once per class, subject and date.
+        # This avoids counting the same lesson once for every student.
+        # ---------------------------------------------------------
+        st.subheader("👤 Individual Student Attendance & Month-End Report")
+        st.caption(
+            "Shows each student's classes held, classes attended, absences, "
+            "leave and cumulative attendance. The cumulative figures run "
+            "from the first recorded session up to the selected end date."
+        )
+
+        individual_sql = """
+            WITH session_counts AS (
+                SELECT
+                    s.class_id,
+                    a.subject_id,
+                    COUNT(DISTINCT a.attendance_date) AS classes_held_period
+                FROM attendance a
+                JOIN students s ON s.id = a.student_id
+                WHERE a.attendance_date BETWEEN ? AND ?
+                GROUP BY s.class_id, a.subject_id
+            ),
+            cumulative_sessions AS (
+                SELECT
+                    s.class_id,
+                    a.subject_id,
+                    COUNT(DISTINCT a.attendance_date) AS cumulative_classes_held
+                FROM attendance a
+                JOIN students s ON s.id = a.student_id
+                WHERE a.attendance_date <= ?
+                GROUP BY s.class_id, a.subject_id
+            ),
+            student_period AS (
+                SELECT
+                    a.student_id,
+                    a.subject_id,
+                    SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) AS attended_period,
+                    SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) AS absent_period,
+                    SUM(CASE WHEN a.status = 'Leave' THEN 1 ELSE 0 END) AS leave_period
+                FROM attendance a
+                WHERE a.attendance_date BETWEEN ? AND ?
+                GROUP BY a.student_id, a.subject_id
+            ),
+            student_cumulative AS (
+                SELECT
+                    a.student_id,
+                    a.subject_id,
+                    SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) AS cumulative_attended,
+                    SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) AS cumulative_absent,
+                    SUM(CASE WHEN a.status = 'Leave' THEN 1 ELSE 0 END) AS cumulative_leave
+                FROM attendance a
+                WHERE a.attendance_date <= ?
+                GROUP BY a.student_id, a.subject_id
+            )
+            SELECT
+                s.name AS student_name,
+                s.roll_no,
+                c.name AS class_name,
+                sub.name AS subject_name,
+                sc.classes_held_period AS total_classes_period,
+                COALESCE(sp.attended_period, 0) AS classes_attended_period,
+                COALESCE(sp.absent_period, 0) AS absent_period,
+                COALESCE(sp.leave_period, 0) AS leave_period,
+                cs.cumulative_classes_held,
+                COALESCE(scu.cumulative_attended, 0) AS cumulative_attended,
+                COALESCE(scu.cumulative_absent, 0) AS cumulative_absent,
+                COALESCE(scu.cumulative_leave, 0) AS cumulative_leave
+            FROM student_period sp
+            JOIN students s ON s.id = sp.student_id
+            JOIN classes c ON c.id = s.class_id
+            JOIN subjects sub ON sub.id = sp.subject_id
+            JOIN session_counts sc ON sc.class_id = s.class_id AND sc.subject_id = sp.subject_id
+            JOIN cumulative_sessions cs ON cs.class_id = s.class_id AND cs.subject_id = sp.subject_id
+            LEFT JOIN student_cumulative scu ON scu.student_id = s.id AND scu.subject_id = sp.subject_id
+            WHERE s.active = 1
+        """
+        individual_params = [
+            start_date.isoformat(), end_date.isoformat(),
+            end_date.isoformat(),
+            start_date.isoformat(), end_date.isoformat(),
+            end_date.isoformat()
+        ]
+
+        if selected_class != "All Classes":
+            individual_sql += " AND c.id = ?"
+            individual_params.append(class_options[selected_class])
+
+        if selected_subject != "All Subjects":
+            individual_sql += " AND sub.id = ?"
+            individual_params.append(subject_options[selected_subject])
+
+        individual_sql += " ORDER BY c.name, s.roll_no, s.name, sub.name"
+        individual_df = read_data(individual_sql, tuple(individual_params))
+
+        if individual_df.empty:
+            st.info("No individual attendance records found for this date range.")
+        else:
+            individual_df["Attendance %"] = (
+                individual_df["classes_attended_period"] /
+                (individual_df["classes_attended_period"] + individual_df["absent_period"]).replace(0, pd.NA)
+                * 100
+            ).fillna(0).round(2)
+            individual_df["Cumulative Attendance %"] = (
+                individual_df["cumulative_attended"] /
+                (individual_df["cumulative_attended"] + individual_df["cumulative_absent"]).replace(0, pd.NA)
+                * 100
+            ).fillna(0).round(2)
+
+            individual_display = individual_df.rename(columns={
+                "student_name": "Student Name",
+                "roll_no": "Roll No",
+                "class_name": "Class",
+                "subject_name": "Subject",
+                "total_classes_period": "Classes Held (Selected Month)",
+                "classes_attended_period": "Classes Attended (Selected Month)",
+                "absent_period": "Absent (Selected Month)",
+                "leave_period": "Leave (Selected Month)",
+                "cumulative_classes_held": "Cumulative Classes Held",
+                "cumulative_attended": "Cumulative Classes Attended",
+                "cumulative_absent": "Cumulative Absent",
+                "cumulative_leave": "Cumulative Leave"
+            })
+            individual_columns = [
+                "Class", "Roll No", "Student Name", "Subject",
+                "Classes Held (Selected Month)",
+                "Classes Attended (Selected Month)",
+                "Absent (Selected Month)", "Leave (Selected Month)",
+                "Attendance %", "Cumulative Classes Held",
+                "Cumulative Classes Attended", "Cumulative Absent",
+                "Cumulative Leave", "Cumulative Attendance %"
+            ]
+            st.dataframe(
+                individual_display[individual_columns],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.download_button(
+                "📥 Download Individual & Cumulative Student Report (CSV)",
+                data=individual_display[individual_columns].to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"student_attendance_{start_date}_{end_date}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        st.divider()
+
         sql = """
             SELECT
                 s.id AS student_id,
