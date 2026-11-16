@@ -592,8 +592,8 @@ with st.sidebar:
 
     st.title("🎓 Attendance App")
     st.caption("Administrator Dashboard")
-    st.title( "Admin")
-    #sst.success("Logged in as Admin")
+
+    st.success("Logged in as Admin")
 
     if st.button(
         "🚪 Logout",
@@ -1376,94 +1376,102 @@ elif page == "Dashboard":
 
     st.divider()
 
-    st.subheader("🚨 Students Absent Today")
+    st.subheader("📚 Class-wise Attendance Overview")
 
-    absent_df = read_data("""
+    # Fetch all active classes and their attendance for today.
+    class_rows = read_data("""
         SELECT
+            c.id AS class_id,
+            c.name AS class_name,
+            COUNT(DISTINCT CASE WHEN s.active = 1 THEN s.id END) AS total_students,
+            COUNT(DISTINCT CASE WHEN a.status = 'Present' THEN a.student_id END) AS present,
+            COUNT(DISTINCT CASE WHEN a.status = 'Absent' THEN a.student_id END) AS absent,
+            COUNT(DISTINCT CASE WHEN a.status = 'Leave' THEN a.student_id END) AS on_leave,
+            COUNT(DISTINCT a.student_id) AS students_marked
+        FROM classes c
+        LEFT JOIN students s ON s.class_id = c.id AND s.active = 1
+        LEFT JOIN attendance a
+            ON a.student_id = s.id AND a.attendance_date = ?
+        WHERE c.active = 1
+        GROUP BY c.id, c.name
+        ORDER BY c.name
+    """, (today,))
+
+    absent_by_class = read_data("""
+        SELECT
+            c.id AS class_id,
             s.name,
             s.roll_no,
             c.name AS class_name,
-            sub.name AS subject_name
-
+            COALESCE(sub.name, '—') AS subject_name
         FROM attendance a
-
         JOIN students s ON a.student_id = s.id
-
         JOIN classes c ON s.class_id = c.id
-
-        JOIN subjects sub ON a.subject_id = sub.id
-
+        LEFT JOIN subjects sub ON a.subject_id = sub.id
         WHERE a.attendance_date = ?
           AND a.status = 'Absent'
           AND s.active = 1
-
-        ORDER BY c.name, s.name
+          AND c.active = 1
+        ORDER BY s.roll_no, s.name
     """, (today,))
 
-    if absent_df.empty:
+    def show_class_panel(class_row):
+        class_id = int(class_row["class_id"])
+        class_name = str(class_row["class_name"])
+        st.markdown(f"### 🎓 {class_name}")
+        m1, m2 = st.columns(2)
+        m1.metric("Total Students", int(class_row["total_students"] or 0))
+        m2.metric("Students Marked", int(class_row["students_marked"] or 0))
+        m3, m4, m5 = st.columns(3)
+        m3.metric("Present", int(class_row["present"] or 0))
+        m4.metric("Absent", int(class_row["absent"] or 0))
+        m5.metric("On Leave", int(class_row["on_leave"] or 0))
 
-        st.success("No absent students recorded today.")
-
-    else:
-
-        for _, student in absent_df.iterrows():
-
-            st.markdown(
-                f"""
-                <div class="absent-card">
+        st.markdown("**🚨 Absent Students**")
+        class_absent = absent_by_class[absent_by_class["class_id"] == class_id]
+        if class_absent.empty:
+            st.success("No absent students recorded.")
+        else:
+            for _, student in class_absent.iterrows():
+                st.markdown(
+                    f"""<div class="absent-card">
                     <b>🔴 {student['name']}</b><br>
-                    Roll No: {student['roll_no']} |
-                    Class: {student['class_name']} |
+                    Roll No: {student['roll_no']}<br>
+                    Class: {student['class_name']}<br>
                     Subject: {student['subject_name']}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                    </div>""",
+                    unsafe_allow_html=True
+                )
 
-    st.divider()
-
-    st.subheader("📚 Today's Class Summary")
-
-    # Start from the classes table so every active class appears, even if
-    # its attendance has not been saved or linked correctly for today.
-    summary = read_data("""
-        SELECT
-            c.name AS Class,
-            COALESCE(sub.name, 'No subject recorded') AS Subject,
-            COUNT(a.id) AS Total_Records,
-            COUNT(DISTINCT a.student_id) AS Students_Marked,
-            SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) AS Present,
-            SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) AS Absent,
-            SUM(CASE WHEN a.status = 'Leave' THEN 1 ELSE 0 END) AS Leave
-        FROM classes c
-        LEFT JOIN students s
-            ON s.class_id = c.id AND s.active = 1
-        LEFT JOIN attendance a
-            ON a.student_id = s.id AND a.attendance_date = ?
-        LEFT JOIN subjects sub
-            ON sub.id = a.subject_id
-        WHERE c.active = 1
-        GROUP BY c.id, c.name, sub.id, sub.name
-        ORDER BY c.name, sub.name
-    """, (today,))
-
-    if summary.empty:
-        st.info("No active classes are available.")
+    if class_rows.empty:
+        st.info("No active classes are available. Add or activate classes from the Classes page.")
     else:
-        # Replace SQL NULLs from classes with no attendance by readable zeros.
-        for column in ["Total_Records", "Students_Marked", "Present", "Absent", "Leave"]:
-            summary[column] = summary[column].fillna(0).astype(int)
+        # Put XI and XII side by side; any other active classes appear below.
+        rows = [row for _, row in class_rows.iterrows()]
+        xi_rows = [r for r in rows if str(r["class_name"]).strip().upper().startswith("XI") and not str(r["class_name"]).strip().upper().startswith("XII")]
+        xii_rows = [r for r in rows if str(r["class_name"]).strip().upper().startswith("XII")]
+        paired_ids = {int(r["class_id"]) for r in (xi_rows + xii_rows)}
+        if xi_rows or xii_rows:
+            left, right = st.columns(2, gap="large")
+            with left:
+                if xi_rows:
+                    for row in xi_rows:
+                        show_class_panel(row)
+                else:
+                    st.info("XI class not found.")
+            with right:
+                if xii_rows:
+                    for row in xii_rows:
+                        show_class_panel(row)
+                else:
+                    st.info("XII class not found.")
 
-        st.dataframe(
-            summary,
-            use_container_width=True,
-            hide_index=True
-        )
+        other_rows = [r for r in rows if int(r["class_id"]) not in paired_ids]
+        for row in other_rows:
+            st.divider()
+            show_class_panel(row)
 
-    st.caption(
-        "Dashboard counts attendance records. "
-        "A student marked in multiple subjects can appear more than once."
-    )
+    st.caption("Class-wise totals count each student once per status. Absent lists include the student's roll number and subject.")
 
 
 # =========================================================
